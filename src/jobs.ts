@@ -1,127 +1,181 @@
 import { randomUUID } from "node:crypto";
-import type { CodexExecutor, ExecResult } from "./codex-executor.js";
-
-export type JobStatus = "running" | "completed" | "failed";
-
-export interface JobView {
-  job_id: string;
-  request_id: string;
-  status: JobStatus;
-  command: string[];
-  cwd: string;
-  created_at: string;
-  finished_at?: string;
-  exit_code?: number;
-  stdout?: string;
-  stderr?: string;
-  error?: string;
-}
-
-interface Job extends JobView {
-  done: Promise<void>;
-  resolveDone: () => void;
-}
+import type { CodexRuntime, ExecResult } from "./codex-runtime.js";
+import {
+  JobStore,
+  type JobRecord,
+  type JobView
+} from "./job-store.js";
 
 export class JobManager {
-  private readonly jobs = new Map<string, Job>();
-  private readonly requestIds = new Map<string, string>();
-
   constructor(
-    private readonly executor: CodexExecutor,
-    private readonly maxJobs: number
+    private readonly runtime: CodexRuntime,
+    private readonly store: JobStore,
+    private readonly longJobsEnabled: boolean,
+    private readonly maxJobTimeoutMs: number
   ) {}
 
-  start(input: {
-    requestId: string;
+  run(input: {
     command: string[];
     cwd: string;
     timeoutMs: number;
-  }): JobView {
-    const existingId = this.requestIds.get(input.requestId);
-    if (existingId) {
-      const existing = this.jobs.get(existingId);
-      if (!existing) throw new Error("request_id index is inconsistent");
+  }): Promise<ExecResult> {
+    return this.runtime.runCommand(input);
+  }
+
+  async start(input: {
+    requestId: string;
+    command: string[];
+    cwd: string;
+    absoluteCwd: string;
+    timeoutMs: number | null;
+  }): Promise<JobView> {
+    if (!this.longJobsEnabled) {
+      throw new Error(
+        "long-running jobs are disabled; use an isolated container and set CSB_LONG_JOBS=1"
+      );
+    }
+
+    if (input.timeoutMs !== null && input.timeoutMs > this.maxJobTimeoutMs) {
+      throw new Error("timeout_ms exceeds CSB_MAX_JOB_TIMEOUT_MS");
+    }
+
+    const existing = this.store.findByRequestId(input.requestId);
+    if (existing) {
       if (
         existing.cwd !== input.cwd ||
+        existing.timeout_ms !== input.timeoutMs ||
         JSON.stringify(existing.command) !== JSON.stringify(input.command)
       ) {
         throw new Error("request_id was already used with different content");
       }
-      return this.view(existing);
+      return this.store.view(existing);
     }
 
-    if (this.jobs.size >= this.maxJobs) {
-      const removable = [...this.jobs.values()]
-        .filter(job => job.status !== "running")
-        .sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
-      if (!removable) throw new Error("too many running jobs");
-      this.jobs.delete(removable.job_id);
-      this.requestIds.delete(removable.request_id);
-    }
-
-    let resolveDone!: () => void;
-    const done = new Promise<void>(resolve => { resolveDone = resolve; });
-    const job: Job = {
-      job_id: randomUUID(),
+    const now = new Date().toISOString();
+    const jobId = randomUUID();
+    const record: JobRecord = {
+      job_id: jobId,
       request_id: input.requestId,
-      status: "running",
+      process_handle: `csb-${jobId}`,
+      status: "starting",
       command: [...input.command],
       cwd: input.cwd,
-      created_at: new Date().toISOString(),
-      done,
-      resolveDone
+      timeout_ms: input.timeoutMs,
+      created_at: now,
+      updated_at: now,
+      stdout_bytes: 0,
+      stderr_bytes: 0,
+      revision: 0
     };
-    this.jobs.set(job.job_id, job);
-    this.requestIds.set(job.request_id, job.job_id);
+    this.store.create(record);
 
-    void this.executor.exec({
-      command: input.command,
-      cwd: input.cwd,
-      timeoutMs: input.timeoutMs
-    }).then(
-      (result: ExecResult) => {
-        job.status = "completed";
-        job.exit_code = result.exitCode;
-        job.stdout = result.stdout;
-        job.stderr = result.stderr;
-      },
-      (error: unknown) => {
-        job.status = "failed";
-        job.error = error instanceof Error ? error.message : String(error);
+    try {
+      await this.runtime.spawnProcess({
+        command: input.command,
+        processHandle: record.process_handle,
+        cwd: input.absoluteCwd,
+        timeoutMs: input.timeoutMs,
+        callbacks: {
+          onOutput: (stream, chunk, capReached) => {
+            this.store.appendOutput(jobId, stream, chunk, capReached);
+          },
+          onExit: result => {
+            if (result.stdout) {
+              this.store.appendOutput(jobId, "stdout", Buffer.from(result.stdout));
+            }
+            if (result.stderr) {
+              this.store.appendOutput(jobId, "stderr", Buffer.from(result.stderr));
+            }
+            const current = this.store.get(jobId);
+            this.store.update(jobId, {
+              status: current.cancel_requested ? "cancelled" : "completed",
+              exit_code: result.exitCode,
+              stdout_cap_reached:
+                current.stdout_cap_reached || result.stdoutCapReached,
+              stderr_cap_reached:
+                current.stderr_cap_reached || result.stderrCapReached,
+              finished_at: new Date().toISOString()
+            });
+          },
+          onLost: error => {
+            const current = this.store.get(jobId);
+            if (!this.store.isTerminal(current.status)) {
+              this.store.update(jobId, {
+                status: "orphaned",
+                error: error.message,
+                finished_at: new Date().toISOString()
+              });
+            }
+          }
+        }
+      });
+
+      const current = this.store.get(jobId);
+      if (current.status === "starting") {
+        this.store.update(jobId, { status: "running" });
       }
-    ).finally(() => {
-      job.finished_at = new Date().toISOString();
-      job.resolveDone();
+    } catch (error) {
+      const current = this.store.get(jobId);
+      if (!this.store.isTerminal(current.status)) {
+        this.store.update(jobId, {
+          status: "failed",
+          error: error instanceof Error ? error.message : String(error),
+          finished_at: new Date().toISOString()
+        });
+      }
+    }
+
+    return this.store.view(this.store.get(jobId));
+  }
+
+  get(jobId: string): JobView {
+    return this.store.view(this.store.get(jobId));
+  }
+
+  async wait(
+    jobId: string,
+    afterRevision: number | undefined,
+    waitMs: number
+  ): Promise<JobView> {
+    if (afterRevision === undefined) return this.get(jobId);
+    return this.store.waitForRevision(jobId, afterRevision, waitMs);
+  }
+
+  readOutput(
+    jobId: string,
+    stream: "stdout" | "stderr",
+    offset: number,
+    maxBytes: number
+  ) {
+    return this.store.readOutput(jobId, stream, offset, maxBytes);
+  }
+
+  list(limit = 20): JobView[] {
+    return this.store.list(limit);
+  }
+
+  async cancel(jobId: string): Promise<JobView> {
+    const job = this.store.get(jobId);
+    if (this.store.isTerminal(job.status)) return this.store.view(job);
+
+    this.store.update(jobId, {
+      status: "cancelling",
+      cancel_requested: true,
+      error: undefined
     });
 
-    return this.view(job);
-  }
-
-  async get(jobId: string, waitMs = 0): Promise<JobView> {
-    const job = this.jobs.get(jobId);
-    if (!job) throw new Error("unknown job_id");
-    if (job.status === "running" && waitMs > 0) {
-      await Promise.race([
-        job.done,
-        new Promise<void>(resolve => setTimeout(resolve, waitMs))
-      ]);
+    try {
+      await this.runtime.killProcess(job.process_handle);
+    } catch (error) {
+      const current = this.store.get(jobId);
+      if (!this.store.isTerminal(current.status)) {
+        this.store.update(jobId, {
+          error: `cancel request failed: ${error instanceof Error ? error.message : String(error)}`
+        });
+      }
+      throw error;
     }
-    return this.view(job);
-  }
 
-  recent(limit = 20): JobView[] {
-    return [...this.jobs.values()]
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .slice(0, limit)
-      .map(job => this.view(job));
-  }
-
-  private view(job: Job): JobView {
-    const {
-      done: _done,
-      resolveDone: _resolveDone,
-      ...view
-    } = job;
-    return { ...view };
+    return this.store.view(this.store.get(jobId));
   }
 }
