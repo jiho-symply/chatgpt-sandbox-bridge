@@ -132,10 +132,12 @@ const files = new FileBridge(
 
 let shuttingDown = false;
 let stdioServer: ReturnType<typeof createMcpServer> | undefined;
+let closeHttp: (() => void) | undefined;
 
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  closeHttp?.();
   if (stdioServer) await stdioServer.close();
   await runtime.close();
 }
@@ -215,10 +217,5 @@ if (args.has("--stdio")) {
     );
   });
 
-  const previousShutdown = shutdown;
-  shutdown = async () => {
-    if (shuttingDown) return;
-    http.close();
-    await previousShutdown();
-  };
+  closeHttp = () => http.close();
 }
