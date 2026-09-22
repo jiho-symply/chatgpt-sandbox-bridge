@@ -1,364 +1,293 @@
 # ChatGPT Sandbox Bridge
 
-Give **ChatGPT Web Chat** an isolated computer it can use directly.
+Expose **an execution environment you prepared** to ChatGPT Web Chat.
 
-ChatGPT remains the only reasoning/coding agent. Codex is not asked to solve tasks, review code, or interpret natural-language instructions. The bridge uses only the Codex app-server execution APIs as a local process harness.
+This project does not create a Docker container, VM, WSL distribution, CUDA stack, Python environment, solver environment, or filesystem layout. Run the bridge inside whatever environment you want ChatGPT to use.
 
-```text
+Examples include your own WSL2 distribution, Docker/Podman container, NVIDIA CUDA/PyTorch container, VM, remote Linux server, Conda environment, Gurobi/CPLEX environment, or Slurm compute node.
+
+~~~text
 ChatGPT Web Chat
-        │
-        │ MCP actions
-        ▼
+        |
+        v
 OpenAI Secure MCP Tunnel
-        │
-        ▼
-chatgpt-sandbox-bridge
-        │
-        ├── short command ──> codex command/exec
-        │
-        ├── long job ───────> codex process/spawn
-        │                       ├── stdout/stderr stream
-        │                       └── process/exited
-        │
-        ├── durable job metadata + logs
-        └── file import/export
-                │
-                ▼
-        isolated Docker / VM
-```
+        |
+        v
+chatgpt-sandbox-bridge --stdio
+        |
+        v
+Codex app-server
+(execution harness only)
+        |
+        +-- command/exec   short commands
+        +-- process/spawn  long jobs
+                |
+                v
+      YOUR execution environment
+~~~
 
-There is no Codex conversation, Codex thread, Codex turn, model selection, or second-agent reasoning in this project.
+ChatGPT is the only reasoning/coding agent. The bridge never sends a natural-language task to a Codex model and does not create Codex threads or turns.
 
-## What ChatGPT can do
+## Responsibilities
+
+### You provide
+
+- operating system and isolation boundary
+- CPU / GPU
+- NVIDIA driver / CUDA
+- Python / Conda
+- PyTorch / TensorFlow
+- Gurobi / CPLEX / OR-Tools
+- compilers and project files
+- network policy
+- workload licenses and credentials
+
+### This repository provides
+
+- short command execution
+- long-running jobs
+- incremental stdout/stderr
+- cancellation
+- durable job metadata
+- file import/export
+- MCP transport
+- Codex app-server adapter
+
+## MCP tools
 
 | Tool | Type | Purpose |
 | --- | --- | --- |
-| `status` | read | Inspect bridge/runtime/isolation state and recent jobs |
-| `run` | action | Run a short exact argv command |
-| `start_job` | action | Start a long-running process and return immediately |
-| `get_job` | read | Check/wait briefly for job state changes |
-| `read_job_output` | read | Read incremental stdout/stderr using byte offsets |
-| `list_jobs` | read | Find recent durable jobs |
-| `cancel_job` | action | Terminate a running long job |
-| `read_file` | read | Read bounded UTF-8 text from the workspace |
-| `import_files` | action | Copy ChatGPT attachments into the workspace |
-| `export_file` | read | Expose a workspace result as an MCP resource/artifact |
+| status | read | Runtime, workspace and recent jobs |
+| run | action | Run a short exact argv command |
+| start_job | action | Start a long-running process |
+| get_job | read | Get job state / bounded wait |
+| read_job_output | read | Incremental stdout/stderr |
+| list_jobs | read | Recover recent job IDs |
+| cancel_job | action | Terminate a long job |
+| read_file | read | Read bounded UTF-8 workspace text |
+| import_files | action | Copy ChatGPT attachments into the workspace |
+| export_file | read | Return a workspace artifact as an MCP resource |
 
-Action tools are deliberately declared as actions. They are **not** mislabeled as read-only to bypass ChatGPT permission controls.
+Action tools are declared as real actions, not as read-only operations.
 
-## Long-running ML / solver jobs
+## Install inside your environment
 
-Do not keep one ChatGPT response open for hours.
+Requirements:
 
-For short commands, ChatGPT uses:
+- Node.js 22+
+- Codex CLI with app-server process APIs; CI currently tests @openai/codex 0.155.1
+- the execution environment you want ChatGPT to operate
 
-```json
-{
-  "command": ["python3", "-m", "pytest", "-q"],
-  "cwd": "."
-}
-```
+~~~bash
+git clone https://github.com/jiho-symply/chatgpt-sandbox-bridge.git
+cd chatgpt-sandbox-bridge
 
-through `run`.
+npm install
+npm run build
+npm link
+~~~
 
-For long or unpredictable commands, including PyTorch training, Gurobi/CPLEX solves, compilation, simulations, or servers, ChatGPT uses `start_job`:
+Install the tested Codex version if needed:
 
-```json
-{
-  "command": ["python3", "solve.py"],
-  "cwd": ".",
-  "timeout_ms": null,
-  "request_id": "solve-20260922-001"
-}
-```
+~~~bash
+npm install -g @openai/codex@0.155.1
+~~~
 
-The call returns after the process starts:
+Then:
 
-```json
-{
-  "job_id": "...",
-  "status": "running",
-  "revision": 1,
-  "stdout_bytes": 0,
-  "stderr_bytes": 0
-}
-```
+~~~bash
+chatgpt-sandbox-bridge --version
+~~~
 
-ChatGPT may briefly wait for a state change:
+should print 0.3.0.
 
-```json
+## Configure the environment
+
+Choose the directory ChatGPT should normally work from:
+
+~~~bash
+export CSB_WORKSPACE_ROOT=/path/to/your/project-or-workspace
+export CSB_STATE_DIR=$HOME/.chatgpt-sandbox-bridge
+~~~
+
+If the current environment itself is the isolation boundary you prepared:
+
+~~~bash
+export CSB_SANDBOX_MODE=externalSandbox
+export CSB_NETWORK=true
+export CSB_LONG_JOBS=true
+~~~
+
+Check the environment:
+
+~~~bash
+chatgpt-sandbox-bridge --doctor
+~~~
+
+Doctor reports workspace/state access, Codex, Node, Python, Git, NVIDIA visibility through nvidia-smi when present, execution policy, and long-job availability.
+
+## Security boundary
+
+CSB_WORKSPACE_ROOT constrains bridge file helpers and accepted working directories. It is **not an OS security boundary for arbitrary commands**.
+
+With externalSandbox, commands can generally access anything available to the OS user running the bridge. Long jobs use Codex process/spawn, which is also outside the Codex sandbox.
+
+Therefore, run the bridge inside the environment you are willing to let ChatGPT operate.
+
+For example, if you need GPU isolation, create your own GPU-enabled container and install/run the bridge inside that container:
+
+~~~text
+your-gpu-container
++-- CUDA
++-- PyTorch
++-- Gurobi
++-- your project
++-- Codex CLI
++-- chatgpt-sandbox-bridge
+~~~
+
+This repository deliberately does not prescribe how that container is created.
+
+The default short-command policy is workspaceWrite, which uses the Codex command sandbox. Long jobs are disabled by default. Enable externalSandbox and CSB_LONG_JOBS only when the surrounding environment is intentionally your execution boundary.
+
+## Recommended transport: stdio + Secure MCP Tunnel
+
+The bridge still supports HTTP, but the recommended local/private setup is stdio.
+
+OpenAI tunnel-client can launch the local MCP server itself:
+
+~~~text
+tunnel-client
+      | stdio
+      v
+chatgpt-sandbox-bridge --stdio
+      |
+      v
+your environment
+~~~
+
+After installing the official tunnel-client:
+
+~~~bash
+export CONTROL_PLANE_TUNNEL_ID='tunnel_0123456789abcdef0123456789abcdef'
+export CONTROL_PLANE_API_KEY='...'
+export MCP_COMMAND='chatgpt-sandbox-bridge --stdio'
+
+tunnel-client doctor --explain
+tunnel-client run --log.level=info --log.format=struct-text
+~~~
+
+The tunnel uses an outbound connection, so the bridge needs no public inbound listener.
+
+Official tunnel-client documentation:
+
+- https://github.com/openai/tunnel-client/blob/master/docs/onboarding.md
+- https://github.com/openai/tunnel-client/blob/master/docs/connectors.md
+
+The minimum runtime configuration is a tunnel ID, a runtime API key, and one main MCP binding. For this project the main binding is MCP_COMMAND=chatgpt-sandbox-bridge --stdio.
+
+## WSL example
+
+If you intentionally want the WSL distribution itself to be the execution environment:
+
+~~~bash
+cd ~/chatgpt-sandbox-bridge
+git pull
+
+npm install
+npm run build
+npm link
+npm install -g @openai/codex@0.155.1
+
+export CSB_WORKSPACE_ROOT="$HOME"
+export CSB_STATE_DIR="$HOME/.chatgpt-sandbox-bridge"
+export CSB_SANDBOX_MODE=externalSandbox
+export CSB_NETWORK=true
+export CSB_LONG_JOBS=true
+
+chatgpt-sandbox-bridge --doctor
+~~~
+
+This exposes what that WSL user can access. It does not create another container.
+
+If you want a custom GPU container instead, enter that container first and perform the same bridge installation there.
+
+## Long-running ML / optimization jobs
+
+For training, Gurobi/CPLEX solving, simulations, builds, or uncertain-duration processes, ChatGPT uses start_job and receives a durable job_id immediately.
+
+ChatGPT can wait for changes only in short bounded calls:
+
+~~~json
 {
   "job_id": "...",
   "after_revision": 1,
   "wait_ms": 10000
 }
-```
+~~~
 
-`get_job` is intentionally capped at **10 seconds per poll**. A ChatGPT response should not poll indefinitely. If a job is still running, the response can end; the process continues in the sandbox. A later chat turn can recover it through `list_jobs` / `get_job`.
+Each wait is capped at 10 seconds. A later Chat turn can use list_jobs, get_job, and read_job_output to continue observing the same job.
 
-Logs are incremental:
+Log reads use byte offsets, so solver/training logs do not need to be resent from the beginning.
 
-```json
-{
-  "job_id": "...",
-  "stream": "stdout",
-  "offset": 0,
-  "max_bytes": 65536
-}
-```
+### Restart semantics
 
-The response returns `next_offset`. Pass that value on the next call to avoid rereading the same solver/training log.
+Job metadata and logs persist under CSB_STATE_DIR.
 
-### Persistence semantics
+Codex process/spawn handles are connection-scoped. If the bridge/app-server restarts while a process is running, the stored job is marked orphaned instead of falsely reported as owned/running.
 
-Job metadata and stdout/stderr logs live under `CSB_STATE_DIR` and survive ChatGPT turns and ordinary container recreation when the state volume is retained.
-
-The actual Codex `process/spawn` handle is connection-scoped. If the bridge or Codex app-server restarts while a job is active, the bridge **does not pretend that it still owns the process**. The persisted job is marked `orphaned`.
-
-For jobs that must survive bridge/container restarts as real running processes, add a dedicated external scheduler/runtime such as systemd, Slurm, Kubernetes Jobs, or a separate worker daemon. That is intentionally outside the v0.2 scope.
+If live jobs must survive bridge restarts, use an external scheduler or supervisor such as systemd, Slurm, Kubernetes Jobs, or another worker already present in your environment.
 
 ## File transfer
 
-### ChatGPT attachment -> sandbox
+ChatGPT attachments can be copied into the workspace through import_files. Outbound HTTPS is required to fetch the temporary file URL.
 
-`import_files` uses the ChatGPT Apps file-parameter contract. ChatGPT supplies temporary file references containing `download_url`, `file_id`, MIME type, and file name; the bridge downloads the file into the selected workspace directory.
+Existing workspace files can be returned through export_file as MCP resource links. Typical outputs include CSV/XLSX, PDF, PNG/JPEG, Gurobi SOL/LP/MPS, ZIP/TAR, and model artifacts within the configured size limit.
 
-Typical flow:
+## HTTP mode
 
-```text
-user attaches data.csv
-      │
-      ▼
-ChatGPT import_files
-      │
-      ▼
-/workspace/imports/data.csv
-      │
-      ▼
-Python / R / solver / compiler
-```
+HTTP remains available for development or deployments where another component manages the remote connection:
 
-The default maximum imported file size is 100 MiB per file.
+~~~bash
+export CSB_WORKSPACE_ROOT=/path/to/workspace
+chatgpt-sandbox-bridge --http
+~~~
 
-### Sandbox -> ChatGPT
+Default endpoint: http://127.0.0.1:8787/mcp
 
-`export_file` converts a workspace file into an MCP `resource_link`:
-
-```text
-/workspace/results/solution.xlsx
-      │
-      ▼
-export_file
-      │
-      ▼
-sandbox://artifact/...
-      │
-      ▼
-MCP resources/read
-      │
-      ▼
-ChatGPT host
-```
-
-Binary data is fetched only when the host reads the resource; it is not dumped into the model prompt as text.
-
-Useful outputs include:
-
-- CSV / XLSX results
-- PDFs
-- PNG/JPEG plots
-- Gurobi `.sol`, `.lp`, `.mps`
-- ZIP/TAR archives
-- model/checkpoint files within the configured export limit
-
-The default export limit is 50 MiB. Resource-link rendering/download behavior is ultimately controlled by the ChatGPT host.
-
-## Why Codex is still present
-
-Codex is only the local execution harness:
-
-- `command/exec` for short sandboxed commands
-- `process/spawn` for long processes
-- `process/outputDelta` for streamed stdout/stderr
-- `process/exited` for completion
-- `process/kill` for cancellation
-
-No natural-language task is sent to a Codex model.
-
-Long jobs use `process/spawn`, which is not a Codex-sandbox API. Therefore **long jobs must run inside a real isolation boundary such as this project's Docker container or a VM**. Do not enable `CSB_LONG_JOBS=1` on an unisolated host unless you intentionally want ChatGPT actions to execute directly on that host.
-
-## Recommended deployment: Docker + Secure MCP Tunnel
-
-The included Compose file has two services:
-
-```text
-Internet / OpenAI
-      │ outbound HTTPS
-      ▼
-tunnel-client
-      │ private Docker network
-      ▼
-bridge
-      │
-      ├── /workspace
-      └── /state
-```
-
-The bridge publishes **no host port** in the Compose deployment. The official OpenAI tunnel client initiates the outbound connection.
-
-### 1. Prepare
-
-```bash
-git clone https://github.com/jiho-symply/chatgpt-sandbox-bridge.git
-cd chatgpt-sandbox-bridge
-
-mkdir -p workspace
-cp .env.example .env
-```
-
-Set in `.env`:
-
-```dotenv
-CSB_BEARER_TOKEN=<long-random-secret>
-CONTROL_PLANE_TUNNEL_ID=<your-tunnel-id>
-CONTROL_PLANE_API_KEY=<your-tunnel-runtime-api-key>
-```
-
-Use the tunnel ID/runtime key created through OpenAI's Secure MCP Tunnel setup.
-
-### 2. Start
-
-```bash
-docker compose up -d --build
-```
-
-Check:
-
-```bash
-docker compose ps
-docker compose logs -f tunnel-client bridge
-```
-
-### 3. Connect from ChatGPT Web Chat
-
-Create/connect the ChatGPT connector that points to the Secure MCP Tunnel, then use it in an ordinary Chat conversation.
-
-The bridge advertises real read and action semantics. Whether a given ChatGPT account/workspace may invoke `run`, `start_job`, `cancel_job`, or `import_files` is enforced by ChatGPT's connector/action permission layer.
-
-This project does **not** turn action tools into fake read tools to circumvent that layer.
-
-## Local development
-
-For local MCP testing without the tunnel:
-
-```bash
-npm install
-npm run build
-
-export CSB_WORKSPACE_ROOT="$PWD/workspace"
-export CSB_STATE_DIR="$PWD/.state"
-export CSB_BEARER_TOKEN='replace-with-a-long-random-secret'
-npm start
-```
-
-Default endpoints:
-
-```text
-MCP:    http://127.0.0.1:8787/mcp
-Health: http://127.0.0.1:8787/health
-```
-
-A bearer token is mandatory when binding beyond loopback.
+If HTTP binds beyond loopback, CSB_BEARER_TOKEN is required.
 
 ## Configuration
 
 | Variable | Default | Meaning |
-| --- | ---: | --- |
-| `CSB_HOST` | `127.0.0.1` | Bridge bind host |
-| `CSB_PORT` | `8787` | Bridge HTTP port |
-| `CSB_WORKSPACE_ROOT` | current directory | Only exposed workspace |
-| `CSB_STATE_DIR` | `~/.chatgpt-sandbox-bridge` | Durable job metadata/logs |
-| `CSB_CODEX_BIN` | `codex` | Codex executable |
-| `CSB_SANDBOX_MODE` | `workspaceWrite` | `workspaceWrite` or `externalSandbox` |
-| `CSB_NETWORK` | `false` | Network flag passed with `externalSandbox` |
-| `CSB_LONG_JOBS` | `false` | Enable unsandboxed-by-Codex `process/spawn`; use only inside hard isolation |
-| `CSB_DEFAULT_RUN_TIMEOUT_MS` | `60000` | Default short-command timeout |
-| `CSB_MAX_RUN_TIMEOUT_MS` | `120000` | Maximum short-command timeout |
-| `CSB_MAX_JOB_TIMEOUT_MS` | `604800000` | Maximum explicit long-job timeout (7 days) |
-| `CSB_MAX_JOBS` | `1000` | Durable job history cap |
-| `CSB_MAX_READ_BYTES` | `1048576` | Maximum text/log bytes returned per call |
-| `CSB_MAX_IMPORT_BYTES` | `104857600` | Maximum imported file size |
-| `CSB_MAX_EXPORT_BYTES` | `52428800` | Maximum exported artifact size |
-| `CSB_BEARER_TOKEN` | unset | Tunnel -> bridge authentication secret |
-
-## Security model
-
-The default Compose deployment deliberately treats Docker as the security boundary for long jobs.
-
-- unprivileged container user
-- no Docker socket
-- only the chosen workspace and bridge state are mounted
-- no host PID namespace
-- all Linux capabilities dropped by Compose
-- `no-new-privileges`
-- bounded PID count
-- relative-path confinement
-- read/write path checks reject workspace escapes and symlink traversal
-- execution receives argv arrays; no implicit shell
-- action tools are correctly annotated as actions
-- idempotent request IDs for long-job submission
-- output reads are bounded and cursor-based
-- bridge/tunnel/API credentials are removed from the environment inherited by Codex execution processes
-
-If ChatGPT intentionally needs shell syntax, it must explicitly execute a shell:
-
-```json
-{
-  "command": ["bash", "-lc", "python3 main.py && python3 analyze.py"]
-}
-```
-
-The default Compose bridge has outbound networking because `import_files` must fetch ChatGPT temporary attachment URLs and many development workflows require package/network access. Add a separate network policy/worker boundary if arbitrary job internet access is not desired.
+| --- | --- | --- |
+| CSB_WORKSPACE_ROOT | current directory | Workspace exposed through bridge helpers |
+| CSB_STATE_DIR | ~/.chatgpt-sandbox-bridge | Durable metadata/logs |
+| CSB_CODEX_BIN | codex | Codex executable |
+| CSB_SANDBOX_MODE | workspaceWrite | workspaceWrite or externalSandbox |
+| CSB_NETWORK | false for workspaceWrite, true for externalSandbox | Declared network availability |
+| CSB_LONG_JOBS | false | Enable process/spawn long jobs |
+| CSB_DEFAULT_RUN_TIMEOUT_MS | 60000 | Short-command default timeout |
+| CSB_MAX_RUN_TIMEOUT_MS | 120000 | Short-command maximum timeout |
+| CSB_MAX_JOB_TIMEOUT_MS | 604800000 | Maximum explicit long-job timeout |
+| CSB_MAX_JOBS | 1000 | Durable job history cap |
+| CSB_MAX_READ_BYTES | 1048576 | Maximum text/log bytes per read |
+| CSB_MAX_IMPORT_BYTES | 104857600 | Maximum imported file size |
+| CSB_MAX_EXPORT_BYTES | 52428800 | Maximum exported artifact size |
+| CSB_HOST | 127.0.0.1 | HTTP-only bind address |
+| CSB_PORT | 8787 | HTTP-only port |
+| CSB_BEARER_TOKEN | unset | Required only for non-loopback HTTP |
 
 ## Validation
 
-```bash
-npm run typecheck
-npm test
-docker build .
-```
+CI validates:
 
-Tests cover:
+- TypeScript typecheck
+- unit tests
+- real Codex command/exec
+- real Codex process/spawn and output streaming
+- stdio MCP startup and tool discovery
+- stdio MCP -> run -> Codex command/exec end-to-end
+- doctor
 
-- workspace traversal rejection
-- symlink escape rejection
-- long-job idempotency
-- streamed log persistence
-- active-job orphaning after bridge restart
-- artifact resource round-trip and size limits
-
-## Design inspiration
-
-The transport and harness design deliberately borrows several proven ideas from [miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web):
-
-- OpenAI Secure MCP Tunnel instead of a public inbound listener
-- bounded polling instead of holding one MCP call indefinitely
-- explicit action annotations
-- fail-closed tool/runtime behavior
-- tool/resource transport rather than copying every binary into model context
-
-The direction is reversed: `codex-chatgpt-web` lets Codex use ChatGPT Web and route ChatGPT tool calls back into Codex; this project starts from ChatGPT Web Chat and exposes only an isolated execution environment.
-
-## Status
-
-v0.2 is intentionally focused on:
-
-1. short commands,
-2. long-running jobs,
-3. incremental logs,
-4. cancellation,
-5. durable job metadata,
-6. file import/export,
-7. Secure MCP Tunnel deployment.
-
-Interactive PTY/stdin sessions and an external worker that can preserve active jobs across bridge restarts are future extensions.
+The transport/harness design borrows ideas from miuuyy/codex-chatgpt-web, particularly Secure MCP Tunnel, bounded polling, explicit action annotations, fail-closed behavior, and resource-based file transport. The direction is reversed: this project starts in ChatGPT Web Chat and exposes a user-provided execution environment.
