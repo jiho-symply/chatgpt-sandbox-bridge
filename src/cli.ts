@@ -1,15 +1,28 @@
 import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { CodexRuntime } from "./codex-runtime.js";
 import { loadConfig } from "./config.js";
-import { CodexExecutor } from "./codex-executor.js";
+import { FileBridge } from "./files.js";
+import { JobStore } from "./job-store.js";
 import { JobManager } from "./jobs.js";
 import { createMcpServer } from "./mcp.js";
 import { Workspace } from "./workspace.js";
 
 const config = loadConfig();
 const workspace = new Workspace(config.workspaceRoot);
-const executor = new CodexExecutor(config);
-const jobs = new JobManager(executor, config.maxJobs);
+const runtime = new CodexRuntime(config);
+const store = new JobStore(config.stateDir, config.maxJobs);
+const jobs = new JobManager(
+  runtime,
+  store,
+  config.longJobsEnabled,
+  config.maxJobTimeoutMs
+);
+const files = new FileBridge(
+  workspace,
+  config.maxImportBytes,
+  config.maxExportBytes
+);
 const token = process.env.CSB_BEARER_TOKEN;
 
 if (config.host !== "127.0.0.1" && config.host !== "::1" && !token) {
@@ -20,7 +33,12 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "chatgpt-sandbox-bridge", version: "0.1.0" });
+  res.json({
+    ok: true,
+    service: "chatgpt-sandbox-bridge",
+    version: "0.2.0",
+    runtime: runtime.status()
+  });
 });
 
 app.all("/mcp", async (req, res) => {
@@ -32,7 +50,7 @@ app.all("/mcp", async (req, res) => {
     }
   }
 
-  const server = createMcpServer(config, workspace, jobs);
+  const server = createMcpServer(config, workspace, runtime, jobs, files);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true
@@ -54,10 +72,23 @@ app.all("/mcp", async (req, res) => {
   }
 });
 
-app.listen(config.port, config.host, () => {
+const http = app.listen(config.port, config.host, () => {
   console.error(
     `chatgpt-sandbox-bridge listening on http://${config.host}:${config.port}/mcp\n` +
     `workspace: ${workspace.root}\n` +
-    `sandbox: ${config.sandboxMode}`
+    `state: ${config.stateDir}\n` +
+    `sandbox: ${config.sandboxMode}\n` +
+    `long jobs: ${config.longJobsEnabled}`
   );
 });
+
+let shuttingDown = false;
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  http.close();
+  await runtime.close();
+}
+
+process.once("SIGINT", () => { void shutdown(); });
+process.once("SIGTERM", () => { void shutdown(); });
