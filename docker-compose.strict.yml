@@ -1,0 +1,17 @@
+# Optional hardening override.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.strict.yml up -d
+#
+# The bridge loses direct internet access. This also disables import_files because
+# ChatGPT's temporary file download URLs can no longer be fetched from the sandbox.
+# The tunnel-client keeps egress so ChatGPT can still reach the MCP server.
+
+services:
+  bridge:
+    networks:
+      - private
+
+networks:
+  private:
+    internal: true
