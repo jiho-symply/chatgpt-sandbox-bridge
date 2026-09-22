@@ -20,10 +20,13 @@ jobs:
       - run: npm install
       - run: npm run typecheck
       - run: npm test
+      - run: npm run build
+      - run: npm install -g @openai/codex@0.155.1
+      - run: node scripts/runtime-smoke.mjs
 
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t chatgpt-sandbox-bridge:test .
+      - run: docker build --build-arg CODEX_VERSION=0.155.1 -t chatgpt-sandbox-bridge:test .
