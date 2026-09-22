@@ -2,7 +2,9 @@ services:
   bridge:
     build: .
     restart: unless-stopped
+    user: "${CSB_UID:-1000}:${CSB_GID:-1000}"
     environment:
+      HOME: /tmp/csb-home
       CSB_BEARER_TOKEN: ${CSB_BEARER_TOKEN}
       CSB_HOST: 0.0.0.0
       CSB_PORT: "8787"
@@ -13,7 +15,7 @@ services:
       CSB_LONG_JOBS: "true"
     volumes:
       - ./workspace:/workspace
-      - csb-state:/state
+      - ./.state:/state
     networks:
       - private
       - egress
@@ -52,9 +54,6 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-
-volumes:
-  csb-state:
 
 networks:
   private:
