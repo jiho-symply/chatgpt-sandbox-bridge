@@ -1,5 +1,7 @@
 node_modules/
 dist/
 .env
+.state/
+workspace/
 *.log
 .DS_Store
