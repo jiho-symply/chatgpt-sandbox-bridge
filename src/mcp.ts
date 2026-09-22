@@ -32,13 +32,13 @@ export function createMcpServer(
   files: FileBridge
 ): McpServer {
   const server = new McpServer(
-    { name: "chatgpt-sandbox-bridge", version: "0.2.0" },
+    { name: "chatgpt-sandbox-bridge", version: "0.3.0" },
     {
       instructions: [
-        "This app provides one user-authorized isolated workspace.",
+        "This app exposes a user-provided execution environment; it does not create or configure that environment.",
         "ChatGPT is the reasoning/coding agent; Codex app-server is only an execution harness.",
         "Use run for commands expected to finish quickly.",
-        "Use start_job for ML, solver, build, server, or other potentially long commands.",
+        "Use start_job for ML, optimization, builds, servers, or other potentially long commands.",
         "For a long job, call get_job with the last revision and wait_ms <= 10000; do not keep one ChatGPT turn polling indefinitely.",
         "Use read_job_output with byte offsets for incremental logs.",
         "Use import_files for ChatGPT attachments and export_file for workspace artifacts.",
@@ -63,8 +63,8 @@ export function createMcpServer(
     "sandbox-artifact",
     new ResourceTemplate("sandbox://artifact/{id}", { list: undefined }),
     {
-      title: "Sandbox artifact",
-      description: "A file exported from the isolated workspace.",
+      title: "Workspace artifact",
+      description: "A file exported from the user-provided execution environment.",
       mimeType: "application/octet-stream"
     },
     async (uri, variables) => {
@@ -82,7 +82,7 @@ export function createMcpServer(
   server.registerTool(
     "status",
     {
-      description: "Inspect bridge, Codex runtime, workspace, isolation, and recent jobs.",
+      description: "Inspect bridge, Codex runtime, configured workspace, execution policy, and recent jobs.",
       inputSchema: {},
       annotations: read
     },
@@ -93,13 +93,14 @@ export function createMcpServer(
       });
       return result({
         ok: version.status === 0,
-        bridge_version: "0.2.0",
+        bridge_version: "0.3.0",
         codex: (version.stdout || version.stderr || "").trim() || null,
         runtime: runtime.status(),
         workspace: workspace.root,
         state_dir: config.stateDir,
-        sandbox_mode: config.sandboxMode,
-        network: config.networkEnabled,
+        environment_provider: "user",
+        command_policy: config.sandboxMode,
+        network_declared: config.networkEnabled,
         long_jobs: config.longJobsEnabled,
         recent_jobs: jobs.list(10)
       });
@@ -110,7 +111,7 @@ export function createMcpServer(
     "run",
     {
       description:
-        "Run one exact argv command expected to finish quickly. " +
+        "Run one exact argv command expected to finish quickly in the configured environment. " +
         "For ML training, optimization, builds, servers, or uncertain duration use start_job instead.",
       inputSchema: {
         command: z.array(z.string().max(32_768)).min(1).max(256),
@@ -144,8 +145,7 @@ export function createMcpServer(
     "start_job",
     {
       description:
-        "Start a long-running exact argv process and return after it has started. " +
-        "The process continues after the current ChatGPT response ends. " +
+        "Start a long-running exact argv process in the user-provided environment and return after it starts. " +
         "Use get_job and read_job_output later. Omit timeout_ms for no process timeout.",
       inputSchema: {
         command: z.array(z.string().max(32_768)).min(1).max(256),
@@ -267,7 +267,7 @@ export function createMcpServer(
     {
       title: "Import ChatGPT files",
       description:
-        "Copy one or more user-provided ChatGPT attachments into the isolated workspace.",
+        "Copy one or more user-provided ChatGPT attachments into the configured workspace.",
       inputSchema: {
         files: z.array(fileParam).min(1).max(10),
         destination_dir: z.string().min(1).max(4096).default("imports")
@@ -291,7 +291,7 @@ export function createMcpServer(
   server.registerTool(
     "export_file",
     {
-      title: "Export sandbox file",
+      title: "Export workspace file",
       description:
         "Return a workspace file as an MCP resource link so ChatGPT can fetch or download the artifact.",
       inputSchema: {
