@@ -1,56 +1,132 @@
-import { describe, expect, it } from "vitest";
-import type { CodexExecutor } from "../src/codex-executor.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type { CodexRuntime, ProcessCallbacks } from "../src/codex-runtime.js";
+import { JobStore } from "../src/job-store.js";
 import { JobManager } from "../src/jobs.js";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function fixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-jobs-"));
+  roots.push(root);
+
+  let spawnCalls = 0;
+  let callbacks: ProcessCallbacks | undefined;
+  const runtime = {
+    runCommand: async () => ({ exitCode: 0, stdout: "short", stderr: "" }),
+    spawnProcess: async (input: { callbacks: ProcessCallbacks }) => {
+      spawnCalls += 1;
+      callbacks = input.callbacks;
+    },
+    killProcess: async () => {},
+  } as unknown as CodexRuntime;
+
+  const store = new JobStore(root, 20);
+  const manager = new JobManager(runtime, store, true, 60_000);
+
+  return {
+    root,
+    store,
+    manager,
+    spawnCalls: () => spawnCalls,
+    callbacks: () => callbacks
+  };
+}
 
 describe("JobManager", () => {
   it("deduplicates an identical request_id", async () => {
-    let calls = 0;
-    const executor = {
-      exec: async () => {
-        calls += 1;
-        return { exitCode: 0, stdout: "ok", stderr: "" };
-      }
-    } as unknown as CodexExecutor;
+    const f = fixture();
 
-    const jobs = new JobManager(executor, 10);
-    const first = jobs.start({
+    const first = await f.manager.start({
       requestId: "request-001",
-      command: ["echo", "ok"],
-      cwd: "/workspace",
-      timeoutMs: 1000
+      command: ["python3", "train.py"],
+      cwd: ".",
+      absoluteCwd: "/workspace",
+      timeoutMs: null
     });
-    const second = jobs.start({
+    const second = await f.manager.start({
       requestId: "request-001",
-      command: ["echo", "ok"],
-      cwd: "/workspace",
-      timeoutMs: 1000
+      command: ["python3", "train.py"],
+      cwd: ".",
+      absoluteCwd: "/workspace",
+      timeoutMs: null
     });
 
     expect(second.job_id).toBe(first.job_id);
-    const final = await jobs.get(first.job_id, 1000);
-    expect(final.status).toBe("completed");
-    expect(final.stdout).toBe("ok");
-    expect(calls).toBe(1);
+    expect(f.spawnCalls()).toBe(1);
+    expect(first.status).toBe("running");
   });
 
-  it("rejects request_id reuse with different content", () => {
-    const executor = {
-      exec: async () => ({ exitCode: 0, stdout: "", stderr: "" })
-    } as unknown as CodexExecutor;
+  it("rejects request_id reuse with different content", async () => {
+    const f = fixture();
 
-    const jobs = new JobManager(executor, 10);
-    jobs.start({
+    await f.manager.start({
       requestId: "request-002",
       command: ["echo", "a"],
-      cwd: "/workspace",
-      timeoutMs: 1000
+      cwd: ".",
+      absoluteCwd: "/workspace",
+      timeoutMs: null
     });
 
-    expect(() => jobs.start({
+    await expect(f.manager.start({
       requestId: "request-002",
       command: ["echo", "b"],
-      cwd: "/workspace",
-      timeoutMs: 1000
-    })).toThrow(/different content/);
+      cwd: ".",
+      absoluteCwd: "/workspace",
+      timeoutMs: null
+    })).rejects.toThrow(/different content/);
+  });
+
+  it("streams output and records terminal status", async () => {
+    const f = fixture();
+
+    const job = await f.manager.start({
+      requestId: "request-003",
+      command: ["python3", "solve.py"],
+      cwd: ".",
+      absoluteCwd: "/workspace",
+      timeoutMs: null
+    });
+
+    f.callbacks()?.onOutput("stdout", Buffer.from("node 1\n"), false);
+    f.callbacks()?.onOutput("stdout", Buffer.from("optimal\n"), false);
+    f.callbacks()?.onExit({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      stdoutCapReached: false,
+      stderrCapReached: false
+    });
+
+    expect(f.manager.get(job.job_id).status).toBe("completed");
+    const output = f.manager.readOutput(job.job_id, "stdout", 0, 1024);
+    expect(output.text).toBe("node 1\noptimal\n");
+    expect(output.terminal).toBe(true);
+  });
+
+  it("marks active jobs orphaned after bridge restart", async () => {
+    const f = fixture();
+
+    const job = await f.manager.start({
+      requestId: "request-004",
+      command: ["sleep", "3600"],
+      cwd: ".",
+      absoluteCwd: "/workspace",
+      timeoutMs: null
+    });
+    expect(job.status).toBe("running");
+
+    const reloaded = new JobStore(f.root, 20);
+    const recovered = reloaded.get(job.job_id);
+    expect(recovered.status).toBe("orphaned");
+    expect(recovered.error).toMatch(/process ownership was lost/);
   });
 });
