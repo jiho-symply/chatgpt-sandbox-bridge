@@ -23,10 +23,11 @@ jobs:
       - run: npm run build
       - run: npm install -g @openai/codex@0.155.1
       - run: node scripts/runtime-smoke.mjs
-
-  docker:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker build --build-arg CODEX_VERSION=0.155.1 -t chatgpt-sandbox-bridge:test .
+      - run: node scripts/stdio-smoke.mjs
+      - name: Doctor
+        env:
+          CSB_WORKSPACE_ROOT: .
+          CSB_STATE_DIR: ./.state-ci
+          CSB_SANDBOX_MODE: externalSandbox
+          CSB_LONG_JOBS: "true"
+        run: node dist/cli.js --doctor
