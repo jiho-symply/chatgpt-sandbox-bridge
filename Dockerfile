@@ -1,10 +1,12 @@
 FROM node:22-bookworm-slim
 
+ARG CODEX_VERSION=0.155.1
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        bash ca-certificates curl git python3 python3-pip build-essential \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @openai/codex@latest
+    && npm install -g "@openai/codex@${CODEX_VERSION}"
 
 WORKDIR /app
 COPY package.json tsconfig.json ./
