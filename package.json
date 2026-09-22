@@ -1,8 +1,8 @@
 {
   "name": "chatgpt-sandbox-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Expose an isolated execution environment to ChatGPT through a minimal MCP action bridge backed by Codex app-server command/exec.",
+  "description": "Expose an isolated execution environment to ChatGPT Web Chat using a minimal MCP bridge and Codex app-server execution harness.",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -15,7 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "express": "^5.1.0",
     "zod": "^3.25.76"
   },
