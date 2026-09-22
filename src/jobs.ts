@@ -176,6 +176,18 @@ export class JobManager {
       throw error;
     }
 
-    return this.store.view(this.store.get(jobId));
+    // process/kill acknowledges the request before process/exited may arrive.
+    // Give the app-server a short window to deliver the terminal notification so
+    // callers normally receive "cancelled" rather than a transient "cancelling".
+    const deadline = Date.now() + 5_000;
+    let current = this.store.get(jobId);
+    while (!this.store.isTerminal(current.status) && Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const revision = current.revision;
+      await this.store.waitForRevision(jobId, revision, Math.min(remaining, 1_000));
+      current = this.store.get(jobId);
+    }
+
+    return this.store.view(current);
   }
 }

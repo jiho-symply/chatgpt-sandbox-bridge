@@ -68,6 +68,50 @@ try {
     throw new Error(`stdio MCP run failed: ${JSON.stringify(data)}`);
   }
 
+  const startedAt = Date.now();
+  const started = await client.callTool({
+    name: "start_job",
+    arguments: {
+      command: ["sh", "-lc", "echo cancel-started; sleep 30; echo cancel-failed"],
+      cwd: ".",
+      request_id: "stdio-cancel-smoke-001"
+    }
+  });
+  const job = started.structuredContent;
+  if (!job?.job_id || job.status !== "running") {
+    throw new Error(`stdio MCP start_job failed: ${JSON.stringify(job)}`);
+  }
+
+  const cancelledResponse = await client.callTool({
+    name: "cancel_job",
+    arguments: { job_id: job.job_id }
+  });
+  const cancelled = cancelledResponse.structuredContent;
+  if (
+    cancelled?.status !== "cancelled" ||
+    cancelled?.cancel_requested !== true ||
+    cancelled?.exit_code !== 137
+  ) {
+    throw new Error(`stdio MCP cancel_job failed: ${JSON.stringify(cancelled)}`);
+  }
+  if (Date.now() - startedAt > 10_000) {
+    throw new Error("stdio MCP cancel_job took too long");
+  }
+
+  const cancelledOutputResponse = await client.callTool({
+    name: "read_job_output",
+    arguments: {
+      job_id: job.job_id,
+      stream: "stdout",
+      offset: 0,
+      max_bytes: 4096
+    }
+  });
+  const cancelledOutput = cancelledOutputResponse.structuredContent;
+  if (String(cancelledOutput?.text ?? "").includes("cancel-failed")) {
+    throw new Error(`cancelled process kept running: ${JSON.stringify(cancelledOutput)}`);
+  }
+
   console.log("STDIO_MCP_SMOKE_OK");
 } finally {
   await client.close().catch(() => {});

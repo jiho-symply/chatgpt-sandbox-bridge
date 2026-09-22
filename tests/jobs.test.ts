@@ -19,6 +19,7 @@ function fixture() {
   roots.push(root);
 
   let spawnCalls = 0;
+  const killedHandles: string[] = [];
   let callbacks: ProcessCallbacks | undefined;
   const runtime = {
     runCommand: async () => ({ exitCode: 0, stdout: "short", stderr: "" }),
@@ -26,7 +27,16 @@ function fixture() {
       spawnCalls += 1;
       callbacks = input.callbacks;
     },
-    killProcess: async () => {},
+    killProcess: async (processHandle: string) => {
+      killedHandles.push(processHandle);
+      callbacks?.onExit({
+        exitCode: 137,
+        stdout: "",
+        stderr: "",
+        stdoutCapReached: false,
+        stderrCapReached: false
+      });
+    },
   } as unknown as CodexRuntime;
 
   const store = new JobStore(root, 20);
@@ -37,6 +47,7 @@ function fixture() {
     store,
     manager,
     spawnCalls: () => spawnCalls,
+    killedHandles: () => [...killedHandles],
     callbacks: () => callbacks
   };
 }
@@ -110,6 +121,25 @@ describe("JobManager", () => {
     const output = f.manager.readOutput(job.job_id, "stdout", 0, 1024);
     expect(output.text).toBe("node 1\noptimal\n");
     expect(output.terminal).toBe(true);
+  });
+
+  it("kills a running job and returns cancelled state", async () => {
+    const f = fixture();
+
+    const job = await f.manager.start({
+      requestId: "request-cancel-001",
+      command: ["sleep", "3600"],
+      cwd: ".",
+      absoluteCwd: "/workspace",
+      timeoutMs: null
+    });
+
+    const cancelled = await f.manager.cancel(job.job_id);
+
+    expect(f.killedHandles()).toHaveLength(1);
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.cancel_requested).toBe(true);
+    expect(cancelled.exit_code).toBe(137);
   });
 
   it("marks active jobs orphaned after bridge restart", async () => {
