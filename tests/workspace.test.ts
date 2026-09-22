@@ -12,25 +12,41 @@ afterEach(() => {
   }
 });
 
+function tempRoot(prefix = "csb-") {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  roots.push(root);
+  return root;
+}
+
 describe("Workspace", () => {
   it("resolves paths inside the root", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-"));
-    roots.push(root);
+    const root = tempRoot();
     const workspace = new Workspace(root);
     expect(workspace.resolve("a/b")).toBe(path.join(root, "a", "b"));
   });
 
   it("rejects traversal and absolute paths", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-"));
-    roots.push(root);
+    const root = tempRoot();
     const workspace = new Workspace(root);
     expect(() => workspace.resolve("../outside")).toThrow();
     expect(() => workspace.resolve(path.resolve(root, "inside"))).toThrow();
   });
 
+  it("rejects symlink traversal for reads and writes", () => {
+    if (process.platform === "win32") return;
+
+    const root = tempRoot();
+    const outside = tempRoot("csb-outside-");
+    fs.writeFileSync(path.join(outside, "secret.txt"), "secret");
+    fs.symlinkSync(outside, path.join(root, "escape"), "dir");
+
+    const workspace = new Workspace(root);
+    expect(() => workspace.resolveExistingFile("escape/secret.txt")).toThrow();
+    expect(() => workspace.writeBinary("escape/new.txt", Buffer.from("x"))).toThrow();
+  });
+
   it("reads bounded text with continuation metadata", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-"));
-    roots.push(root);
+    const root = tempRoot();
     fs.writeFileSync(path.join(root, "x.txt"), "abcdef");
     const workspace = new Workspace(root);
     expect(workspace.readText("x.txt", 3, 0)).toMatchObject({
