@@ -61,7 +61,7 @@ export function loadConfig(): Config {
     ),
     codexBin: process.env.CSB_CODEX_BIN ?? "codex",
     sandboxMode,
-    networkEnabled: bool("CSB_NETWORK", false),
+    networkEnabled: bool("CSB_NETWORK", sandboxMode === "externalSandbox"),
     longJobsEnabled: bool("CSB_LONG_JOBS", false),
     defaultRunTimeoutMs,
     maxRunTimeoutMs,
