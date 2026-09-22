@@ -1,14 +1,18 @@
 {
   "name": "chatgpt-sandbox-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Expose an isolated execution environment to ChatGPT Web Chat using a minimal MCP bridge and Codex app-server execution harness.",
+  "description": "Expose a user-provided execution environment to ChatGPT Web Chat through MCP, using Codex app-server only as an execution harness.",
   "type": "module",
+  "bin": {
+    "chatgpt-sandbox-bridge": "dist/cli.js"
+  },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
