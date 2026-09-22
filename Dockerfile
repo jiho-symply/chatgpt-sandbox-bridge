@@ -15,13 +15,13 @@ RUN npm run build
 
 RUN useradd --create-home --uid 10001 sandbox \
     && mkdir -p /workspace \
-    && chown -R sandbox:sandbox /workspace /app
+    && chown -R sandbox:sandbox /workspace
 
 USER sandbox
 ENV CSB_HOST=0.0.0.0
 ENV CSB_PORT=8787
 ENV CSB_WORKSPACE_ROOT=/workspace
-ENV CSB_SANDBOX_MODE=externalSandbox
+ENV CSB_SANDBOX_MODE=workspaceWrite
 ENV CSB_NETWORK=false
 
 EXPOSE 8787
