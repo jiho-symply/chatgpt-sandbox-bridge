@@ -191,7 +191,7 @@ export class CodexRuntime {
       clientInfo: {
         name: "chatgpt_sandbox_bridge",
         title: "ChatGPT Sandbox Bridge",
-        version: "0.2.0"
+        version: "0.3.0"
       },
       capabilities: { experimentalApi: true }
     });
