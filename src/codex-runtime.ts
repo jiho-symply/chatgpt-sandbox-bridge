@@ -33,6 +33,7 @@ function runtimeEnv(): NodeJS.ProcessEnv {
   for (const key of [
     "CSB_BEARER_TOKEN",
     "CONTROL_PLANE_API_KEY",
+    "OPENAI_API_KEY",
     "OPENAI_ADMIN_KEY",
     "CLOUDFLARED_TUNNEL_TOKEN"
   ]) {
